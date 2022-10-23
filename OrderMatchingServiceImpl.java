@@ -101,140 +101,128 @@ public class OrderMatchingServiceImpl implements OrderMatchingService {
 //    }
 
     @Override
-    public List<TradeOrder> executeMatchEngine(TradeRequest tradeRequest){
+    public List<TradeOrder> executeMatchEngine(TradeRequest tradeRequest) {
         List<StockOrder> stockOrders = tradeRequest.getOrders();
 
-        Map<String,  PriorityQueue<StockOrder>> perStockSell = new LinkedHashMap<>();
-        Map<String,  PriorityQueue<StockOrder>> perStockBuy = new LinkedHashMap<>();
+        Map<String, PriorityQueue<StockOrder>> perStockSell = new LinkedHashMap<>();
+        Map<String, PriorityQueue<StockOrder>> perStockBuy = new LinkedHashMap<>();
 
-        PriorityQueue<StockOrder>  ordersToSell  = new PriorityQueue<>(stockOrders.size(), (order1, order2) -> {
-            if (order1.getPrice().compareTo(order2.getPrice()) == 0) {  // if same price whoever comes first
-                return order1.getCreateAt().compareTo(order2.getCreateAt());
-            }
-            return order1.getPrice().compareTo(order2.getPrice()); // Ascending order of prices
-        });
+        List<TradeOrder> orderBooks = new ArrayList<>();
 
-        PriorityQueue<StockOrder>  ordersToBuy  = new PriorityQueue<>(stockOrders.size(), (order1, order2) -> {
-            if (order2.getPrice().compareTo(order1.getPrice()) == 0) { // if same price whoever comes first
-                return order1.getCreateAt().compareTo(order2.getCreateAt());
-            }
-            return order2.getPrice().compareTo(order1.getPrice()); // descending order of prices
-        });
-
-        List<TradeOrder> tradeOrders = new ArrayList<>();
-
-        for (StockOrder newOrder: stockOrders) {
+        for (StockOrder newOrder : stockOrders) {
             String stockSymbol = newOrder.getStockSymbol();
 
-            if(newOrder.getTxnType()==TxnType.buy) {
+            if (newOrder.getTxnType() == TxnType.buy) {
                 //1. any seller waiting
-                if(!perStockSell.isEmpty() && perStockSell.containsKey(stockSymbol) && null!=perStockSell.get(stockSymbol)
-                        && !perStockSell.get(stockSymbol).isEmpty()) {
-                    PriorityQueue<StockOrder> sellerQueue = perStockSell.get(stockSymbol);
+                if (!perStockBuy.containsKey(stockSymbol)) {
+                    PriorityQueue<StockOrder> queue = initializeQueueForBuyer(stockOrders.size());
+                    perStockBuy.put(newOrder.getStockSymbol(), queue);
+                }
+                PriorityQueue<StockOrder> buyQueue = perStockBuy.get(stockSymbol);
 
-                    PriorityQueue<StockOrder> buyQueue = perStockBuy.getOrDefault(stockSymbol,ordersToBuy);
+                //look for matching trades
+                if (!perStockSell.isEmpty() && perStockSell.containsKey(stockSymbol) && null != perStockSell.get(stockSymbol)
+                        && !perStockSell.get(stockSymbol).isEmpty()) {
+
+                    PriorityQueue<StockOrder> sellerQueue = perStockSell.get(stockSymbol);
                     StockOrder buyer = newOrder;
+                    buyQueue.offer(buyer);
 
                     //till all lower price sold out
-                    while(!sellerQueue.isEmpty() && null!=sellerQueue.peek() &&  buyer.getPrice().compareTo(sellerQueue.peek().getPrice())>=0
-                            &&  buyer.getQuantity()>0){
+                    while (!sellerQueue.isEmpty() && null != sellerQueue.peek() && buyer.getPrice().compareTo(sellerQueue.peek().getPrice()) >= 0
+                            && buyer.getQuantity() > 0) {
                         StockOrder seller = sellerQueue.peek();
 
-                        if(seller==null) break;
-                        Integer soldQty ;
+                        if (seller == null) break;
+                        Integer soldQty = null;
 
-                        if(buyer.getQuantity()<seller.getQuantity()) {
-                            soldQty= Math.min(buyer.getQuantity(),seller.getQuantity());
-                            seller.setQuantity(seller.getQuantity()-buyer.getQuantity());
+                        if (buyer.getQuantity() < seller.getQuantity()) {
+                            soldQty = Math.min(buyer.getQuantity(), seller.getQuantity());
+                            int remainingQty = seller.getQuantity() - buyer.getQuantity();
+                            seller.setQuantity(remainingQty);
                             buyer.setQuantity(0);
+
+                            if (remainingQty > 0) {
+                                buyQueue.poll();
+                            }
                             //no need to add buyer in the queue, buyer exhausted
                             //keep seller in queue for coming buyer
-                        }else if(buyer.getQuantity()>seller.getQuantity()){
-                            soldQty= Math.min(buyer.getQuantity(),seller.getQuantity());
+                        } else if (buyer.getQuantity() > seller.getQuantity()) {
+                            soldQty = Math.min(buyer.getQuantity(), seller.getQuantity());
                             sellerQueue.poll(); // take out seller , as sold this order
 
-                            Integer remainingQty = buyer.getQuantity()-seller.getQuantity();
+                            Integer remainingQty = buyer.getQuantity() - seller.getQuantity();
                             buyer.setQuantity(remainingQty);
-
-                            if(!buyQueue.isEmpty() && buyQueue.peek()!=buyer){
-                                buyQueue.offer(buyer); // add new buyer in queue
-                            }
-                            perStockBuy.putIfAbsent(buyer.getStockSymbol(),buyQueue); //
-                        }else {
-                            soldQty= Math.min(buyer.getQuantity(),seller.getQuantity());
+                            perStockBuy.putIfAbsent(buyer.getStockSymbol(), buyQueue); //
+                        } else {
+                            soldQty = Math.min(buyer.getQuantity(), seller.getQuantity());
                             seller.setQuantity(0);
                             buyer.setQuantity(0);
                             sellerQueue.poll();
+                            buyQueue.poll();
                         }
-                       // if(foundMatch) {
-                            tradeOrders.add(bookTrade(seller.getOrderId(), soldQty,
-                                    seller.getPrice(), buyer.getOrderId()));
-                       // }
-                    }if(!sellerQueue.isEmpty() && null!=sellerQueue.peek() && buyer.getPrice().compareTo(sellerQueue.peek().getPrice())<0) {
-                        buyQueue.offer(buyer);
-                        perStockBuy.put(buyer.getStockSymbol(),buyQueue);
+                        //add in order book
+                        orderBooks.add(bookTrade(seller.getOrderId(), soldQty, seller.getPrice(), buyer.getOrderId()));
                     }
-                }else { //add buyer in waiting
-                    ordersToBuy.offer(newOrder);//
-                    perStockBuy.put(newOrder.getStockSymbol(),ordersToBuy);
+                } else { //add buyer in waiting
+                    buyQueue.offer(newOrder);
+                    perStockBuy.put(newOrder.getStockSymbol(), buyQueue);
                 }
-            }
-            else if(newOrder.getTxnType()==TxnType.sell){
+            } else if (newOrder.getTxnType() == TxnType.sell) {
 
-                if(!perStockBuy.isEmpty() && perStockBuy.containsKey(stockSymbol) && null!=perStockBuy.get(stockSymbol)
+                if (!perStockSell.containsKey(stockSymbol)) { // found new key
+                    PriorityQueue<StockOrder> queue = initializeQueueForSeller(stockOrders.size());
+                    perStockSell.put(newOrder.getStockSymbol(), queue);
+                }
+                PriorityQueue<StockOrder> sellQueue = perStockSell.get(stockSymbol);
+
+                if (!perStockBuy.isEmpty() && perStockBuy.containsKey(stockSymbol) && null != perStockBuy.get(stockSymbol)
                         && !perStockBuy.get(stockSymbol).isEmpty()) {
                     PriorityQueue<StockOrder> buyerQueue = perStockBuy.get(stockSymbol);
-
-                    PriorityQueue<StockOrder> sellQueue = perStockSell.getOrDefault(stockSymbol,ordersToSell);
                     StockOrder seller = newOrder;
+                    sellQueue.offer(seller);
 
-                    while (!buyerQueue.isEmpty() && null!=buyerQueue.peek()
-                            && seller.getPrice().compareTo(buyerQueue.peek().getPrice())<=0
-                            && buyerQueue.peek().getQuantity()>0){
+                    while (!buyerQueue.isEmpty() && null != buyerQueue.peek() && seller.getPrice().compareTo(buyerQueue.peek().getPrice()) <= 0
+                            && seller.getQuantity() > 0) {
                         StockOrder buyer = buyerQueue.peek();
-                        if(null==buyer) break;
-                        Integer soldQty = seller.getQuantity();
+                        if (null == buyer) break;
+                        Integer soldQty = null;
 
-                        if(buyer.getQuantity()<seller.getQuantity()) {
-                            soldQty= Math.min(buyer.getQuantity(),seller.getQuantity());
-                            seller.setQuantity(newOrder.getQuantity()-buyer.getQuantity());
+                        if (buyer.getQuantity() < seller.getQuantity()) {
+                            soldQty = Math.min(buyer.getQuantity(), seller.getQuantity());
+                            seller.setQuantity(newOrder.getQuantity() - buyer.getQuantity());
                             //no need to add buyer in the queue
                             buyerQueue.poll();// buyer is exhaust
                             buyer.setQuantity(0);
 
-                            sellQueue.offer(seller);
-                            perStockSell.putIfAbsent(seller.getStockSymbol(),sellQueue);
-                        }else if(buyer.getQuantity()>seller.getQuantity()){
-                            soldQty= Math.min(buyer.getQuantity(),seller.getQuantity());
-                            Integer remainingQty = buyer.getQuantity()-seller.getQuantity();
+                            perStockSell.putIfAbsent(seller.getStockSymbol(), sellQueue);
+                        } else if (buyer.getQuantity() > seller.getQuantity()) {
+                            soldQty = Math.min(buyer.getQuantity(), seller.getQuantity());
+                            Integer remainingQty = buyer.getQuantity() - seller.getQuantity();
                             buyer.setQuantity(remainingQty);
-                            //no need to add seller in queue as seller is done
-                            // and buyer still waiting
-                        }else { // equal remove buyer
-                            soldQty= Math.min(buyer.getQuantity(),seller.getQuantity());
+                            seller.setQuantity(0);
+
+                            if (remainingQty > 0) {
+                                sellQueue.poll();
+                            }
+                        } else { // equal remove buyer
+                            soldQty = Math.min(buyer.getQuantity(), seller.getQuantity());
                             buyerQueue.poll();
                             seller.setQuantity(0);
                             buyer.setQuantity(0);
+                            sellQueue.poll();
                         }
-                      //  if(foundMatch) {
-                            tradeOrders.add(bookTrade(seller.getOrderId(), soldQty,
-                                    seller.getPrice(), buyer.getOrderId()));
-                       // }
-                    }if(!buyerQueue.isEmpty() && null!=buyerQueue.peek() && seller.getPrice().compareTo(buyerQueue.peek().getPrice())>0) {
-                        sellQueue.offer(seller); // add for future buyerr
-                        perStockSell.put(seller.getStockSymbol(),sellQueue);
+
+                        orderBooks.add(bookTrade(seller.getOrderId(), soldQty, seller.getPrice(), buyer.getOrderId()));
                     }
-                }else { // new stock symbol started trades
-                    ordersToSell.offer(newOrder);// add seller in waiting
-                    perStockSell.put(newOrder.getStockSymbol(),ordersToSell);
+                } else {
+                    sellQueue.offer(newOrder);
+                    perStockSell.put(newOrder.getStockSymbol(), sellQueue);
                 }
             }
-            log.info("Seller Queue ----->{}",perStockSell.get(newOrder.getStockSymbol()));
-            log.info("Buyer  Queue ----->{}",perStockBuy.get(newOrder.getStockSymbol()));
-            log.info("Trade List  ----->{}",tradeOrders);
         }
 
-        return tradeOrders;
+        return orderBooks;
     }
 
     private TradeOrder bookTrade(BigInteger sellerId, Integer quantity, BigDecimal price ,BigInteger buyerId ){
@@ -244,5 +232,22 @@ public class OrderMatchingServiceImpl implements OrderMatchingService {
                 .price(price)
                 .buyerOrderId(buyerId)
                 .build();
+    }
+    private PriorityQueue<StockOrder> initializeQueueForSeller(int queueSize){
+      return new PriorityQueue<>(queueSize, (order1, order2) -> {
+            if (order1.getPrice().compareTo(order2.getPrice()) == 0) {  // if same price whoever comes first
+                return order1.getCreateAt().compareTo(order2.getCreateAt());
+            }
+            return order1.getPrice().compareTo(order2.getPrice()); // Ascending order of prices
+        });
+    }
+    private PriorityQueue<StockOrder> initializeQueueForBuyer(int queueSize){
+
+        return new PriorityQueue<>(queueSize, (order1, order2) -> {
+            if (order2.getPrice().compareTo(order1.getPrice()) == 0) { // if same price whoever comes first
+                return order1.getCreateAt().compareTo(order2.getCreateAt());
+            }
+            return order2.getPrice().compareTo(order1.getPrice()); // descending order of prices
+        });
     }
 }
