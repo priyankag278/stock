@@ -30,6 +30,7 @@ public class OrderMatchingEngineImpl implements OrderMatchingEngine {
     public List<TradeOrder> executeMatchEngine(List<StockOrder> stockOrders) {
         log.info("OrderMatchingEngineImpl::executeMatchEngine executing order matching process");
 
+        //Store sell & buy queue for each stock symbol
         Map<String, PriorityQueue<StockOrder>> perStockSell = new LinkedHashMap<>();
         Map<String, PriorityQueue<StockOrder>> perStockBuy = new LinkedHashMap<>();
 
@@ -37,103 +38,56 @@ public class OrderMatchingEngineImpl implements OrderMatchingEngine {
 
         for (StockOrder newOrder : stockOrders) {
             String stockSymbol = newOrder.getStockSymbol();
+            log.debug("OrderMatchingEngineImpl::executeMatchEngine stockSymbol :{}",stockSymbol);
 
             if (newOrder.getTxnType() == TxnType.buy) {
-                //1. any seller waiting
+
+                //if stock symbol found first time, initialize txn queue
                 if (!perStockBuy.containsKey(stockSymbol)) {
                     PriorityQueue<StockOrder> queue = initializeQueueForBuyer(stockOrders.size());
                     perStockBuy.put(newOrder.getStockSymbol(), queue);
                 }
                 PriorityQueue<StockOrder> buyerQueue = perStockBuy.get(stockSymbol);
 
-                //look for matching trades
+                //look for already available SELLER orders if any match found
                 if (!perStockSell.isEmpty() && perStockSell.containsKey(stockSymbol) && null != perStockSell.get(stockSymbol)
                         && !perStockSell.get(stockSymbol).isEmpty()) {
 
                     PriorityQueue<StockOrder> sellerQueue = perStockSell.get(stockSymbol);
-                    StockOrder buyer = newOrder;
+                    // add buyer in queue to do further processing
+                    StockOrder buyer = newOrder; // keeping in local variable just for naming convention of buyer and seller orrder
                     buyerQueue.offer(buyer);
-                    //till all lower price sold out
-                    checkIfAnySellerAvailableToBuy(perStockBuy, buyer, sellerQueue, buyerQueue, orderBooks);
-//                    while (!sellerQueue.isEmpty() && null != sellerQueue.peek() && buyer.getPrice().compareTo(sellerQueue.peek().getPrice()) >= 0
-//                            && buyer.getQuantity() > 0) {
-//                        StockOrder seller = sellerQueue.peek();
-//
-//                        if (seller == null) break;
-//                        Integer soldQty =  Math.min(buyer.getQuantity(), seller.getQuantity());
-//
-//                        if (buyer.getQuantity() < seller.getQuantity()) {
-//                            int remainingQty = seller.getQuantity() - buyer.getQuantity();
-//                            seller.setQuantity(remainingQty);
-//                            buyer.setQuantity(0);
-//
-//                            if (remainingQty > 0) {
-//                                buyerQueue.poll();
-//                            }
-//                            //no need to add buyer in the queue, buyer exhausted
-//                            //keep seller in queue for coming buyer
-//                        } else if (buyer.getQuantity() > seller.getQuantity()) {
-//                            sellerQueue.poll(); // take out seller , as sold this order
-//
-//                            Integer remainingQty = buyer.getQuantity() - seller.getQuantity();
-//                            buyer.setQuantity(remainingQty);
-//                            perStockBuy.putIfAbsent(buyer.getStockSymbol(), buyerQueue); //
-//                        } else {
-//                            seller.setQuantity(0);
-//                            buyer.setQuantity(0);
-//                            sellerQueue.poll();
-//                            buyerQueue.poll();
-//                        }
-//                        //add in order book
-//                        orderBooks.add(bookTrade(seller.getOrderId(), soldQty, seller.getPrice(), buyer.getOrderId()));
-//                    }
-                } else { //add buyer in waiting
+                    log.debug("OrderMatchingEngineImpl::executeMatchEngine buyer {}",buyer);
+
+                    //fulfill seller orders if price/quantity criteria matched
+                    checkIfAnySellerAvailableToBuy(buyer, sellerQueue, buyerQueue, orderBooks);
+                } else { //add buyer for future orders
                     buyerQueue.offer(newOrder);
                     perStockBuy.put(newOrder.getStockSymbol(), buyerQueue);
                 }
             } else if (newOrder.getTxnType() == TxnType.sell) {
-                if (!perStockSell.containsKey(stockSymbol)) { // found new key
+
+                //if stock symbol found first time, initialize txn queue
+                if (!perStockSell.containsKey(stockSymbol)) {
                     PriorityQueue<StockOrder> queue = initializeQueueForSeller(stockOrders.size());
                     perStockSell.put(newOrder.getStockSymbol(), queue);
                 }
                 PriorityQueue<StockOrder> sellerQueue = perStockSell.get(stockSymbol);
 
+                //look for already available BUYER orders if any match found
                 if (!perStockBuy.isEmpty() && perStockBuy.containsKey(stockSymbol) &&
                         null != perStockBuy.get(stockSymbol) && !perStockBuy.get(stockSymbol).isEmpty()) {
                     PriorityQueue<StockOrder> buyerQueue = perStockBuy.get(stockSymbol);
+
+                    // add seller in queue to do further processing
                     StockOrder seller = newOrder;
                     sellerQueue.offer(seller);
 
-                    checkIfBuyerAvailableToSell(perStockSell, seller, sellerQueue, buyerQueue, orderBooks);
-//                    while (!buyerQueue.isEmpty() && null != buyerQueue.peek() && seller.getPrice().compareTo(buyerQueue.peek().getPrice()) <= 0
-//                            && seller.getQuantity() > 0) {
-//                        StockOrder buyer = buyerQueue.peek();
-//                        if (null == buyer) break;
-//                        Integer soldQty =  Math.min(buyer.getQuantity(), seller.getQuantity());
-//
-//                        if (buyer.getQuantity() < seller.getQuantity()) {
-//                            seller.setQuantity(seller.getQuantity() - buyer.getQuantity());
-//                            //no need to add buyer in the queue
-//                            buyerQueue.poll();// buyer is exhaust
-//                            buyer.setQuantity(0);
-//
-//                            perStockSell.putIfAbsent(seller.getStockSymbol(), sellerQueue);
-//                        } else if (buyer.getQuantity() > seller.getQuantity()) {
-//                            Integer remainingQty = buyer.getQuantity() - seller.getQuantity();
-//                            buyer.setQuantity(remainingQty);
-//                            seller.setQuantity(0);
-//                            if (remainingQty > 0) {
-//                                sellerQueue.poll();
-//                            }
-//                        } else { // equal remove buyer
-//                            buyerQueue.poll();
-//                            sellerQueue.poll();
-//                            seller.setQuantity(0);
-//                            buyer.setQuantity(0);
-//                        }
-//                        orderBooks.add(bookTrade(seller.getOrderId(), soldQty, seller.getPrice(), buyer.getOrderId()));
-//                    }
-                } else {
+                    log.debug("OrderMatchingEngineImpl::executeMatchEngine seller {}",seller);
+
+                    //fulfill buyer orders if price/quantity criteria matched
+                    checkIfBuyerAvailableToSell(seller, sellerQueue, buyerQueue, orderBooks);
+                } else {//add seller for future orders
                     sellerQueue.offer(newOrder);
                     perStockSell.put(newOrder.getStockSymbol(), sellerQueue);
                 }
@@ -148,46 +102,27 @@ public class OrderMatchingEngineImpl implements OrderMatchingEngine {
      * waiting for new buyer having order greater then
      * equal to seller stock price. On success match add
      * a new transaction to order book
-     *
-     * @param perStockBuy
-     * @param buyer
+     *  @param buyer
      * @param sellerQueue
      * @param buyerQueue
      * @param orderBooks
      */
-    private void checkIfAnySellerAvailableToBuy(Map<String, PriorityQueue<StockOrder>> perStockBuy, StockOrder buyer,
-                                                PriorityQueue<StockOrder> sellerQueue, PriorityQueue<StockOrder> buyerQueue, List<TradeOrder> orderBooks) {
+    private void checkIfAnySellerAvailableToBuy(StockOrder buyer, PriorityQueue<StockOrder> sellerQueue,
+                                                PriorityQueue<StockOrder> buyerQueue, List<TradeOrder> orderBooks) {
         log.info("OrderMatchingEngineImpl::checkIfAnySellerAvailableToBuy check if any seller waiting for stock to buy");
+
+        //loop till buyer price is greater then equal to seller price and sufficient quantity available
         while (!sellerQueue.isEmpty() && null != sellerQueue.peek() && buyer.getPrice().compareTo(sellerQueue.peek().getPrice()) >= 0
                 && buyer.getQuantity() > 0) {
             StockOrder seller = sellerQueue.peek();
-
+            log.debug("OrderMatchingEngineImpl::checkIfAnySellerAvailableToBuy Buyer :{} , Seller :{}", buyer, seller);
             if (seller == null) break;
             Integer soldQty = Math.min(buyer.getQuantity(), seller.getQuantity());
 
-            if (buyer.getQuantity() < seller.getQuantity()) {
-                int remainingQty = seller.getQuantity() - buyer.getQuantity();
-                seller.setQuantity(remainingQty);
-                buyer.setQuantity(0);
+            //fulfil seller and buyer with price-matching algorithm
+            matchPriceAndQuantity(seller,buyer,sellerQueue,buyerQueue);
 
-                if (remainingQty > 0) {
-                    buyerQueue.poll();
-                }
-                //no need to add buyer in the queue, buyer exhausted
-                //keep seller in queue for coming buyer
-            } else if (buyer.getQuantity() > seller.getQuantity()) {
-                sellerQueue.poll(); // take out seller , as sold this order
-
-                Integer remainingQty = buyer.getQuantity() - seller.getQuantity();
-                buyer.setQuantity(remainingQty);
-                perStockBuy.putIfAbsent(buyer.getStockSymbol(), buyerQueue); //
-            } else {
-                seller.setQuantity(0);
-                buyer.setQuantity(0);
-                sellerQueue.poll();
-                buyerQueue.poll();
-            }
-            //add in order book
+            //add matched entry in order book
             orderBooks.add(bookTrade(seller.getOrderId(), soldQty, seller.getPrice(), buyer.getOrderId()));
         }
         log.info("OrderMatchingEngineImpl::Exiting from checkIfAnySellerAvailableToBuy");
@@ -198,47 +133,66 @@ public class OrderMatchingEngineImpl implements OrderMatchingEngine {
      * waiting for new seller having order less then
      * equal to buyer stock price. On success match add
      * a new transaction to order book
-     *
-     * @param perStockSell
-     * @param seller
+     *  @param seller
      * @param sellerQueue
      * @param buyerQueue
      * @param orderBooks
      */
-    private void checkIfBuyerAvailableToSell(Map<String, PriorityQueue<StockOrder>> perStockSell, StockOrder seller,
-                                             PriorityQueue<StockOrder> sellerQueue, PriorityQueue<StockOrder> buyerQueue, List<TradeOrder> orderBooks) {
+    private void checkIfBuyerAvailableToSell(StockOrder seller, PriorityQueue<StockOrder> sellerQueue,
+                                             PriorityQueue<StockOrder> buyerQueue, List<TradeOrder> orderBooks) {
         log.info("OrderMatchingEngineImpl::checkIfBuyerAvailableToSell check if any buyer waiting for stock to sell");
         while (!buyerQueue.isEmpty() && null != buyerQueue.peek() && seller.getPrice().compareTo(buyerQueue.peek().getPrice()) <= 0
                 && seller.getQuantity() > 0) {
             StockOrder buyer = buyerQueue.peek();
+            log.debug("OrderMatchingEngineImpl::checkIfBuyerAvailableToSell Buyer :{} , Seller :{}",buyer,seller);
             if (null == buyer) break;
             Integer soldQty = Math.min(buyer.getQuantity(), seller.getQuantity());
 
-            if (buyer.getQuantity() < seller.getQuantity()) {
-                seller.setQuantity(seller.getQuantity() - buyer.getQuantity());
-                //no need to add buyer in the queue
-                buyerQueue.poll();// buyer is exhaust
-                buyer.setQuantity(0);
+            //fulfil seller and buyer with price-matching algorithm
+            matchPriceAndQuantity(seller,buyer,sellerQueue,buyerQueue);
 
-                perStockSell.putIfAbsent(seller.getStockSymbol(), sellerQueue);
-            } else if (buyer.getQuantity() > seller.getQuantity()) {
-                Integer remainingQty = buyer.getQuantity() - seller.getQuantity();
-                buyer.setQuantity(remainingQty);
-                seller.setQuantity(0);
-                if (remainingQty > 0) {
-                    sellerQueue.poll();
-                }
-            } else { // equal remove buyer
-                buyerQueue.poll();
-                sellerQueue.poll();
-                seller.setQuantity(0);
-                buyer.setQuantity(0);
-            }
             orderBooks.add(bookTrade(seller.getOrderId(), soldQty, seller.getPrice(), buyer.getOrderId()));
         }
         log.info("OrderMatchingEngineImpl::checkIfBuyerAvailableToSell Exiting from checkIfBuyerAvailableToSell");
     }
 
+    /**
+     * This method verify buyer and seller quantity and clear queue
+     * if condition satisfy
+     *
+     *
+     * @param seller
+     * @param buyer
+     * @param sellerQueue
+     * @param buyerQueue
+     */
+    private void matchPriceAndQuantity(StockOrder seller, StockOrder buyer , PriorityQueue<StockOrder> sellerQueue , PriorityQueue<StockOrder> buyerQueue){
+        log.debug("OrderMatchingEngineImpl::checkIfBuyerAvailableToSell Buyer :{} , Seller :{}",buyer,seller);
+
+        //if buyer quantity is lesser , then pull out from queue after fulfilling this seller
+        //keep seller in queue for coming buyers
+        if (buyer.getQuantity() < seller.getQuantity()) {
+            seller.setQuantity(seller.getQuantity() - buyer.getQuantity());
+
+            buyerQueue.poll();
+            buyer.setQuantity(0);
+        }
+        //if buyer quantity is more, then kepp this and pull out seller
+        else if (buyer.getQuantity() > seller.getQuantity()) {
+            Integer remainingQty = buyer.getQuantity() - seller.getQuantity();
+            buyer.setQuantity(remainingQty);
+            seller.setQuantity(0);
+            log.debug("OrderMatchingEngineImpl::checkIfBuyerAvailableToSell Remaining{}",remainingQty);
+
+            sellerQueue.poll();
+        } else { //buyer and seller having same quantity found perfect match , pull out both
+            seller.setQuantity(0);
+            buyer.setQuantity(0);
+
+            buyerQueue.poll();
+            sellerQueue.poll();
+        }
+    }
     /**
      * Create a new instance of price matched transaction
      * betwee  buyer and seller
